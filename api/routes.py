@@ -1,57 +1,249 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from db import get_db
-from crud import student, teacher, course, enrollment
-from schemas import student as student_schema
-from schemas import teacher as teacher_schema
-from schemas import course as course_schema
-from schemas import enrollment as enrollment_schema
+from typing import List
 
-from models.scraped import ScrapedResource
+# Models
+from models.student import Student
+from models.teacher import Teacher
+from models.course import Course
+from models.enrollment import Enrollment
+
+# Schemas
+from schemas import student_schema, teacher_schema, course_schema, enrollment_schema
+from schemas.scraped_schema import ScrapedResourceBase
+
 import json
+from pathlib import Path
+from models.scraped import ScrapedResource
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from db import get_db
+from models.course import Course
+from schemas.course_schema import CourseCreate, CourseOut
+
 
 router = APIRouter()
 
+# ---------------- Students ----------------
 @router.post("/students", response_model=student_schema.StudentOut)
-def create_student(student_in: student_schema.StudentCreate, db: Session = Depends(get_db)):
-    return student.create_student(db, student_in)
+def create_student(student: student_schema.StudentCreate, db: Session = Depends(get_db)):
+    db_student = Student(**student.dict())
+    db.add(db_student)
+    db.commit()
+    db.refresh(db_student)
+    return db_student
 
-@router.get("/students/{id}", response_model=student_schema.StudentOut)
-def get_student(id: int, db: Session = Depends(get_db)):
-    result = student.get_student(db, id)
-    if not result:
+@router.get("/students", response_model=list[student_schema.StudentOut])
+def get_students(db: Session = Depends(get_db)):
+    return db.query(Student).all()
+
+@router.get("/students/{student_id}", response_model=student_schema.StudentOut)
+def get_student(student_id: int, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
         raise HTTPException(status_code=404, detail="Student not found")
-    return result
+    return student
 
+@router.put("/students/{student_id}", response_model=student_schema.StudentOut)
+def update_student(student_id: int, student: student_schema.StudentUpdate, db: Session = Depends(get_db)):
+    db_student = db.query(Student).filter(Student.id == student_id).first()
+    if not db_student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    for key, value in student.dict(exclude_unset=True).items():
+        setattr(db_student, key, value)
+    db.commit()
+    db.refresh(db_student)
+    return db_student
+
+@router.delete("/students/{student_id}")
+def delete_student(student_id: int, db: Session = Depends(get_db)):
+    db_student = db.query(Student).filter(Student.id == student_id).first()
+    if not db_student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    db.delete(db_student)
+    db.commit()
+    return {"detail": "Student deleted"}
+
+
+# ---------------- Teachers ----------------
 @router.post("/teachers", response_model=teacher_schema.TeacherOut)
-def create_teacher(teacher_in: teacher_schema.TeacherCreate, db: Session = Depends(get_db)):
-    return teacher.create_teacher(db, teacher_in)
+def create_teacher(teacher: teacher_schema.TeacherCreate, db: Session = Depends(get_db)):
+    db_teacher = Teacher(**teacher.dict())
+    db.add(db_teacher)
+    db.commit()
+    db.refresh(db_teacher)
+    return db_teacher
 
-@router.post("/courses", response_model=course_schema.CourseOut)
-def create_course(course_in: course_schema.CourseCreate, db: Session = Depends(get_db)):
-    return course.create_course(db, course_in)
+@router.get("/teachers", response_model=list[teacher_schema.TeacherOut])
+def get_teachers(db: Session = Depends(get_db)):
+    return db.query(Teacher).all()
 
-@router.post("/students/{id}/enroll", response_model=enrollment_schema.EnrollmentOut)
-def enroll(id: int, course_data: enrollment_schema.EnrollmentCreate, db: Session = Depends(get_db)):
+@router.get("/teachers/{teacher_id}", response_model=teacher_schema.TeacherOut)
+def get_teacher(teacher_id: int, db: Session = Depends(get_db)):
+    teacher = db.query(Teacher).filter(Teacher.id == teacher_id).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    return teacher
+
+@router.put("/teachers/{teacher_id}", response_model=teacher_schema.TeacherOut)
+def update_teacher(teacher_id: int, teacher: teacher_schema.TeacherUpdate, db: Session = Depends(get_db)):
+    db_teacher = db.query(Teacher).filter(Teacher.id == teacher_id).first()
+    if not db_teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    for key, value in teacher.dict(exclude_unset=True).items():
+        setattr(db_teacher, key, value)
+    db.commit()
+    db.refresh(db_teacher)
+    return db_teacher
+
+@router.delete("/teachers/{teacher_id}")
+def delete_teacher(teacher_id: int, db: Session = Depends(get_db)):
+    db_teacher = db.query(Teacher).filter(Teacher.id == teacher_id).first()
+    if not db_teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    db.delete(db_teacher)
+    db.commit()
+    return {"detail": "Teacher deleted"}
+
+
+# ---------------- Courses ----------------
+@router.post("/courses", response_model=CourseOut, status_code=status.HTTP_201_CREATED)
+def create_course(course: CourseCreate, db: Session = Depends(get_db)):
+    # basic validation
+    if course.capacity is not None and course.capacity < 0:
+        raise HTTPException(status_code=400, detail="capacity must be >= 0")
+
+    db_course = Course(
+        title=course.title,
+        description=course.description,
+        capacity=course.capacity
+    )
+
     try:
-        return enrollment.enroll_student(db, id, course_data.course_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        db.add(db_course)
+        db.commit()
+        db.refresh(db_course)
+    except IntegrityError as e:
+        db.rollback()
+        # user-friendly message (avoid exposing DB internals)
+        raise HTTPException(status_code=400, detail="Integrity error: possibly duplicate or invalid data")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return db_course
+
+
+@router.get("/courses", response_model=list[course_schema.CourseOut])
+def get_courses(db: Session = Depends(get_db)):
+    return db.query(Course).all()
+
+@router.get("/courses/{course_id}", response_model=course_schema.CourseOut)
+def get_course(course_id: int, db: Session = Depends(get_db)):
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return course
+
+@router.put("/courses/{course_id}", response_model=course_schema.CourseOut)
+def update_course(course_id: int, course: course_schema.CourseUpdate, db: Session = Depends(get_db)):
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    for key, value in course.dict(exclude_unset=True).items():
+        setattr(db_course, key, value)
+    db.commit()
+    db.refresh(db_course)
+    return db_course
+
+@router.delete("/courses/{course_id}")
+def delete_course(course_id: int, db: Session = Depends(get_db)):
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    db.delete(db_course)
+    db.commit()
+    return {"detail": "Course deleted"}
+
+
+# ---------------- Enrollments ----------------
+@router.post("/enrollments", response_model=enrollment_schema.EnrollmentOut)
+def create_enrollment(enrollment: enrollment_schema.EnrollmentCreate, db: Session = Depends(get_db)):
+    db_enrollment = Enrollment(**enrollment.dict())
+    db.add(db_enrollment)
+    db.commit()
+    db.refresh(db_enrollment)
+    return db_enrollment
+
+@router.get("/enrollments", response_model=list[enrollment_schema.EnrollmentOut])
+def get_enrollments(db: Session = Depends(get_db)):
+    return db.query(Enrollment).all()
+
+@router.get("/enrollments/{enrollment_id}", response_model=enrollment_schema.EnrollmentOut)
+def get_enrollment(enrollment_id: int, db: Session = Depends(get_db)):
+    enrollment = db.query(Enrollment).filter(Enrollment.id == enrollment_id).first()
+    if not enrollment:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    return enrollment
+
+@router.put("/enrollments/{enrollment_id}", response_model=enrollment_schema.EnrollmentOut)
+def update_enrollment(enrollment_id: int, enrollment: enrollment_schema.EnrollmentCreate, db: Session = Depends(get_db)):
+    db_enrollment = db.query(Enrollment).filter(Enrollment.id == enrollment_id).first()
+    if not db_enrollment:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    for key, value in enrollment.dict(exclude_unset=True).items():
+        setattr(db_enrollment, key, value)
+    db.commit()
+    db.refresh(db_enrollment)
+    return db_enrollment
+
+@router.delete("/enrollments/{enrollment_id}")
+def delete_enrollment(enrollment_id: int, db: Session = Depends(get_db)):
+    db_enrollment = db.query(Enrollment).filter(Enrollment.id == enrollment_id).first()
+    if not db_enrollment:
+        raise HTTPException(status_code=404, detail="Enrollment not found")
+    db.delete(db_enrollment)
+    db.commit()
+    return {"detail": "Enrollment deleted"}
+
+
+# ------------------ Scraped Resources ------------------
+@router.get("/scraped_resources")
+def get_scraped_resources(db: Session = Depends(get_db)):
+    return db.query(ScrapedResource).all()
 
 @router.post("/import/scraped")
 def import_scraped_data(db: Session = Depends(get_db)):
-    try:
-        with open("samples/scraped.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
+    import json
+    from pathlib import Path
 
-        for item in data:
-            res = ScrapedResource(**item)
-            db.add(res)
-        db.commit()
-        return {"message": f"{len(data)} items imported."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    file_path = Path("samples/scraped.json")
 
-@router.get("/scraped_resources")
-def list_scraped_resources(db: Session = Depends(get_db)):
-    return db.query(ScrapedResource).all()
+    if not file_path.exists():
+        return {"error": "samples/scraped.json not found"}
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        return {"error": "Invalid JSON format, expected a list"}
+
+    for item in data:
+        # converting price in to float value
+        price_value = item.get("price")
+        try:
+            price_value = float(price_value) if price_value is not None else None
+        except ValueError:
+            price_value = None  # if invalid then save NULL
+
+        db_obj = ScrapedResource(
+            title=item.get("title"),
+            url=item.get("url"),
+            category=item.get("category"),
+            price=price_value,
+        )
+        db.add(db_obj)
+
+    db.commit()
+    return {"message": "Scraped data imported successfully"}
+
+

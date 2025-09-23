@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 import urllib.robotparser
 import re
+from models.base import Base
 
 load_dotenv()
 
@@ -17,13 +18,13 @@ Base = declarative_base()
 
 
 class ScrapedResource(Base):
-    __tablename__ = 'scraped_resources'
+    __tablename__ = "scraped_resources"
 
-    id = Column(Integer, primary_key=True)
-    title = Column(String)
-    url = Column(String)
-    category = Column(String)
-    price = Column(Float)  # float type রাখলাম শুধু সংখ্যা রাখার জন্য
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+    category = Column(String, nullable=True)
+    price = Column(String, nullable=True)
 
 
 def extract_price(price_str):
@@ -42,8 +43,8 @@ def check_robots(url):
         can_fetch = rp.can_fetch('*', url)
         return can_fetch
     except Exception as e:
-        print(f"robots.txt পড়তে সমস্যা: {e}, অনুমতি ধরে নিলাম")
-        return True  # কোনো সমস্যা হলে অনুমতি ধরে নিলাম
+        print(f"if problem arrive when robots.txt: {e}, Assuming Accepted")
+        return True
 
 
 
@@ -57,7 +58,7 @@ def scrape_books(pages):
         url = f"http://books.toscrape.com/catalogue/page-{page}.html"
 
         if not check_robots(url):
-            print(f"স্ক্র্যাপিং অনুমতি নেই: {url}")
+            print(f"No Permission: {url}")
             continue
 
         response = requests.get(url, headers=headers)
@@ -115,7 +116,7 @@ if __name__ == "__main__":
     DATABASE_URL = args.db or os.getenv("DB_URI")
 
     if not DATABASE_URL:
-        print("ডাটাবেস URI দেওয়া হয়নি। --db দিয়ে বা .env ফাইলে DB_URI সেট করে দিন।")
+        print("Database URI is Not Provided.type --db or set DB_URI on .env file")
         exit(1)
 
     engine = create_engine(DATABASE_URL)

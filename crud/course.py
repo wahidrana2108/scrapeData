@@ -1,6 +1,6 @@
 from models.course import Course
 from sqlalchemy.orm import Session
-from schemas.course import CourseCreate
+from schemas.course_schema import CourseCreate
 
 def create_course(db: Session, course: CourseCreate):
     db_course = Course(**course.dict())

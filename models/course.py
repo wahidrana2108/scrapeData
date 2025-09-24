@@ -5,6 +5,6 @@ class Course(Base):
     __tablename__ = "courses"
 
     id = Column(Integer, primary_key=True, index=True)
-    title = Column(String(255), nullable=False, unique=False)  # if unique=True
+    title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    capacity = Column(Integer, nullable=True)
+    capacity = Column(Integer, default=30)

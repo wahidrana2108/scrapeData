@@ -17,4 +17,4 @@ class CourseOut(CourseBase):
     id: int
 
     class Config:
-        from_attributes = True
+        from_attributes = True  # Pydantic v2: ORM mode

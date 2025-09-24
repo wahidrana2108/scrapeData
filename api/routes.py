@@ -14,11 +14,19 @@ import json
 from pathlib import Path
 from models.scraped import ScrapedResource
 from fastapi import APIRouter, Depends, HTTPException, status
+from db import get_db
+from schemas.course_schema import CourseCreate, CourseOut
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from schemas import course_schema
+
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 from db import get_db
+from models.enrollment import Enrollment
 from models.course import Course
-from schemas.course_schema import CourseCreate, CourseOut
+from schemas import enrollment_schema
 
 
 router = APIRouter()
@@ -106,55 +114,52 @@ def delete_teacher(teacher_id: int, db: Session = Depends(get_db)):
 
 
 # ---------------- Courses ----------------
-@router.post("/courses", response_model=CourseOut, status_code=status.HTTP_201_CREATED)
-def create_course(course: CourseCreate, db: Session = Depends(get_db)):
-    # basic validation
-    if course.capacity is not None and course.capacity < 0:
-        raise HTTPException(status_code=400, detail="capacity must be >= 0")
-
+# Create Course
+@router.post("/courses", response_model=course_schema.CourseOut, status_code=status.HTTP_201_CREATED)
+def create_course(course: course_schema.CourseCreate, db: Session = Depends(get_db)):
     db_course = Course(
         title=course.title,
         description=course.description,
         capacity=course.capacity
     )
-
     try:
         db.add(db_course)
         db.commit()
         db.refresh(db_course)
-    except IntegrityError as e:
+        return db_course
+    except IntegrityError:
         db.rollback()
-        # user-friendly message (avoid exposing DB internals)
-        raise HTTPException(status_code=400, detail="Integrity error: possibly duplicate or invalid data")
+        raise HTTPException(status_code=400, detail="Course creation failed: duplicate or invalid data")
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
-    return db_course
-
-
+# Get all courses
 @router.get("/courses", response_model=list[course_schema.CourseOut])
 def get_courses(db: Session = Depends(get_db)):
     return db.query(Course).all()
 
+# Get course by ID
 @router.get("/courses/{course_id}", response_model=course_schema.CourseOut)
 def get_course(course_id: int, db: Session = Depends(get_db)):
-    course = db.query(Course).filter(Course.id == course_id).first()
-    if not course:
+    db_course = db.query(Course).filter(Course.id == course_id).first()
+    if not db_course:
         raise HTTPException(status_code=404, detail="Course not found")
-    return course
+    return db_course
 
+# Update course
 @router.put("/courses/{course_id}", response_model=course_schema.CourseOut)
 def update_course(course_id: int, course: course_schema.CourseUpdate, db: Session = Depends(get_db)):
     db_course = db.query(Course).filter(Course.id == course_id).first()
     if not db_course:
         raise HTTPException(status_code=404, detail="Course not found")
-    for key, value in course.dict(exclude_unset=True).items():
-        setattr(db_course, key, value)
+    for field, value in course.dict(exclude_unset=True).items():
+        setattr(db_course, field, value)
     db.commit()
     db.refresh(db_course)
     return db_course
 
+# Delete course
 @router.delete("/courses/{course_id}")
 def delete_course(course_id: int, db: Session = Depends(get_db)):
     db_course = db.query(Course).filter(Course.id == course_id).first()
@@ -162,21 +167,37 @@ def delete_course(course_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Course not found")
     db.delete(db_course)
     db.commit()
-    return {"detail": "Course deleted"}
+    return {"message": "Course deleted successfully"}
 
 
 # ---------------- Enrollments ----------------
 @router.post("/enrollments", response_model=enrollment_schema.EnrollmentOut)
 def create_enrollment(enrollment: enrollment_schema.EnrollmentCreate, db: Session = Depends(get_db)):
+    # 1. Prevent duplicate enrollment
+    existing = db.query(Enrollment).filter(
+        Enrollment.student_id == enrollment.student_id,
+        Enrollment.course_id == enrollment.course_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Student is already enrolled in this course")
+
+    # 2. Enforce course capacity
+    course = db.query(Course).filter(Course.id == enrollment.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    if course.capacity is not None:
+        enrolled_count = db.query(Enrollment).filter(Enrollment.course_id == course.id).count()
+        if enrolled_count >= course.capacity:
+            raise HTTPException(status_code=400, detail="Course capacity has been reached")
+
+    # Create new enrollment
     db_enrollment = Enrollment(**enrollment.dict())
     db.add(db_enrollment)
     db.commit()
     db.refresh(db_enrollment)
     return db_enrollment
 
-@router.get("/enrollments", response_model=list[enrollment_schema.EnrollmentOut])
-def get_enrollments(db: Session = Depends(get_db)):
-    return db.query(Enrollment).all()
 
 @router.get("/enrollments/{enrollment_id}", response_model=enrollment_schema.EnrollmentOut)
 def get_enrollment(enrollment_id: int, db: Session = Depends(get_db)):
